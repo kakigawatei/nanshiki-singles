@@ -27,7 +27,7 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 /* ---------- perspective（コート一面がしっかり映る引きのカメラ） ---------- */
 const K=1.45,S1=1/(1+K);
 const sc=z=>1/(1+K*z);
-const gy=z=>{const u=(1-sc(z))/(1-S1);return H*0.93-(H*0.93-H*0.50)*u;};
+const gy=z=>{const u=(1-sc(z))/(1-S1);return H*0.82-(H*0.82-H*0.38)*u;}; // コートを画面上部に収める
 const sx=(x,z)=>W/2+x*0.52*W*sc(z);
 const sy=(z,y)=>gy(z)-y*0.85*H*sc(z);
 const NETZ=0.5,OPPZ=0.95; // ネットはコート中央、相手はベースライン
@@ -111,7 +111,7 @@ function nextPoint(delay){
   charIdx=(charIdx+1)%HATS.length;
   setTimeout(()=>{
     if(state==="matchEnd"||state==="title")return;
-    if(serverNow()===0){state="srvPow";meterT=0;}
+    if(serverNow()===0){state="serve";meterT=0;}
     else{state="cpuServe";meterT=0;}
   },delay||600);
   state="ptEnd";
@@ -121,25 +121,38 @@ function mkIncoming(fromX,toX,T,arc,opts){ // CPU→自分
   // サーブは自分側サービスボックス（ネット〜サービスライン）、ラリーは深め
   const bz=(opts&&opts.serve)?rand(0.30,0.45):rand(0.12,0.24);
   const drift=(toX-fromX)*0.15;
-  return Object.assign({
+  const b=Object.assign({
     dir:1,si:0,t:0,ch:charIdx,rot:0,
     seg:[
       {fx:fromX,tx:toX,fz:OPPZ,tz:bz,y0:0.30,y1:0,arc,T},
-      {fx:toX,tx:clamp(toX+drift,-0.95,0.95),fz:bz,tz:-0.06,y0:0,y1:0,arc:0.20,T:T*0.85}
+      {fx:toX,tx:clamp(toX+drift,-0.95,0.95),fz:bz,tz:-0.06,y0:0,y1:0,arc:0.20,T:T*1.05}
     ]
   },opts||{});
+  ensureClear(b.seg[0]);
+  return b;
+}
+// ネット(z=NETZ)上端を必ず越える弧に補正
+function ensureClear(seg){
+  const tn=(NETZ-seg.fz)/(seg.tz-seg.fz);
+  if(tn>0.03&&tn<0.97){
+    const base=lerp(seg.y0,seg.y1,tn);
+    const need=(0.27-base)/Math.sin(Math.PI*tn);
+    if(need>seg.arc)seg.arc=need;
+  }
 }
 function mkOutgoing(fromX,fromZ,toX,T,arc,opts){ // 自分→CPU
   // サーブは相手サービスボックス、ラリーは深くベースライン際へ
   const bz=(opts&&opts.serve)?rand(0.56,0.72):rand(0.72,0.88);
   const drift=(toX-fromX)*0.12;
-  return Object.assign({
+  const b=Object.assign({
     dir:-1,si:0,t:0,ch:ball?ball.ch:charIdx,rot:0,
     seg:[
       {fx:fromX,tx:toX,fz:fromZ,tz:bz,y0:0.30,y1:0,arc,T},
       {fx:toX,tx:clamp(toX+drift,-0.9,0.9),fz:bz,tz:OPPZ,y0:0,y1:0.28,arc:0.10,T:0.40}
     ]
   },opts||{});
+  ensureClear(b.seg[0]);
+  return b;
 }
 function launchServe(who,powV,courseV){
   const T=lerp(0.95,0.45,powV);
@@ -225,7 +238,7 @@ function playerHit(px,py){
   const beforeBounce=ball.si===0&&p.z<=NETZ+0.02;
   if(!afterBounce&&!beforeBounce)return false;
   const dist=Math.hypot(px-p.bx,py-p.by);
-  if(dist>Math.max(46,p.br*1.7)+22)return false;
+  if(dist>Math.max(62,p.br*2.2)+30)return false; // 判定ひろめ
   // タイミング→コース（引きつけ式）：目の前まで待つとまっすぐ
   const zMax=afterBounce?Math.max(0.12,ball.seg[1].fz):NETZ+0.02;
   const zN=0.06;
@@ -306,32 +319,28 @@ cv.addEventListener("pointerdown",e=>{
     return;
   }
   if(state==="matchEnd"){state="title";return;}
-  if(state==="srvPow"){
-    pow=meterVal();
-    beep(520,0.06,"sine",0.1);
-    state="srvCourse";meterT=0;
-    return;
-  }
-  if(state==="srvCourse"){
+  if(state==="serve"){
+    // ゲージ1本：角度（コース）だけ調整。端の赤ゾーンだけフォルト
     course=meterVal()*2-1; // -1..1
-    // フォルト判定：パワー超過 or コース外
-    if(pow>0.93||Math.abs(course)>0.86){
+    if(Math.abs(course)>0.93){
       if(srvNum===1){
         srvNum=2;
         banner={main:"フォルト！",sub:"セカンドサーブ",col:"#d94848",until:performance.now()+900};
         beep(240,0.15,"sawtooth",0.1);
-        state="srvPow";meterT=0;
+        state="serve";meterT=0;
       }else{
-        pointEnd(1,"ダブルフォルト…","めーターの真ん中らへんで止めよう","#d94848");
+        pointEnd(1,"ダブルフォルト…","はしっこの赤だけ気をつけて！","#d94848");
       }
       return;
     }
+    // パワーは自動（コースが端に近いほど強い攻めサーブ）
+    pow=0.62+Math.abs(course)*0.3+rand(-0.04,0.04);
     launchServe(0,pow,course);
     return;
   }
   if(state==="rally"&&ball&&ball.dir===1){
     if(swingCd>0)return;
-    swingCd=0.34;swing=0.25;
+    swingCd=0.26;swing=0.25;
     plSide=px<W/2?"L":"R";
     if(!playerHit(px,py)){
       beep(250,0.09,"sine",0.07);
@@ -341,7 +350,7 @@ cv.addEventListener("pointerdown",e=>{
 },{passive:false});
 // メーター値：0..1を往復
 function meterVal(){
-  const speed=srvNum===1?2.6:1.9; // 2ndは遅くて簡単
+  const speed=srvNum===1?2.0:1.5; // 2ndは遅くて簡単
   const v=(Math.sin(meterT*speed*Math.PI-Math.PI/2)+1)/2;
   return v;
 }
@@ -468,10 +477,13 @@ function render(){
     let img=swing>0?(plSide==="L"?IMG.player_swing_left:IMG.player_swing_right):IMG.player_idle;
     if(!ok(img))img=IMG.player_idle;
     if(ok(img)){
-      const ph=0.30*W*(swing>0?1.05:1);
+      const ph=0.34*W*(swing>0?1.05:1);
       const pw=ph*img.naturalWidth/img.naturalHeight;
       const bob=swing>0?0:Math.sin(performance.now()/300)*H*0.004;
-      ctx.drawImage(img,W/2-pw/2,H*1.02-ph+bob,pw,ph);
+      const pfoot=gy(0.03); // 自分のベースライン上に全身が見える
+      ctx.fillStyle="rgba(0,0,0,0.18)";
+      ctx.beginPath();ctx.ellipse(W/2,pfoot,pw*0.42,ph*0.06,0,0,Math.PI*2);ctx.fill();
+      ctx.drawImage(img,W/2-pw/2,pfoot-ph+bob,pw,ph);
     }
   }
 
@@ -519,31 +531,31 @@ function render(){
     }
   }
 
-  // serve meters
-  if(state==="srvPow"||state==="srvCourse"){
+  // serve meter（1本：角度だけ）
+  if(state==="serve"){
     const v=meterVal();
     ctx.fillStyle="rgba(20,40,30,0.8)";
-    roundRect(W*0.08,H*0.62,W*0.84,H*0.115,16);ctx.fill();
-    outlineText(state==="srvPow"?("パワー！ "+(srvNum===2?"（2ndサーブ）":"")):"コース！",W/2,H*0.648,W*0.045,"#fff","#2e7d46");
-    const bx=W*0.13,bw=W*0.74,by=H*0.685,bh=H*0.032;
-    ctx.fillStyle="#d9e5dc";roundRect(bx,by,bw,bh,8);ctx.fill();
-    if(state==="srvPow"){
-      // スイートゾーン 0.6-0.93
-      ctx.fillStyle="#ffd76e";ctx.fillRect(bx+bw*0.6,by,bw*0.33,bh);
-      ctx.fillStyle="#d94848";ctx.fillRect(bx+bw*0.93,by,bw*0.07,bh);
-    }else{
-      // 中央=安全、端=攻めコース、最端=フォルト
-      ctx.fillStyle="#9fe0b0";ctx.fillRect(bx+bw*0.30,by,bw*0.40,bh);
-      ctx.fillStyle="#ffd76e";ctx.fillRect(bx,by,bw*0.07,bh);
-      ctx.fillStyle="#ffd76e";ctx.fillRect(bx+bw*0.93,by,bw*0.07,bh);
-    }
+    roundRect(W*0.08,H*0.845,W*0.84,H*0.115,16);ctx.fill();
+    outlineText("サーブのかくど！"+(srvNum===2?"（2ndサーブ）":""),W/2,H*0.873,W*0.045,"#fff","#2e7d46");
+    const bx=W*0.13,bw=W*0.74,by=H*0.905,bh=H*0.032;
+    // 中央=安全（緑）、左右=攻めコース（黄）、最端のみフォルト（赤・せまい）
+    ctx.fillStyle="#9fe0b0";roundRect(bx,by,bw,bh,8);ctx.fill();
+    ctx.fillStyle="#ffd76e";
+    ctx.fillRect(bx+bw*0.035,by,bw*0.165,bh);
+    ctx.fillRect(bx+bw*0.80,by,bw*0.165,bh);
+    ctx.fillStyle="#d94848";
+    ctx.fillRect(bx,by,bw*0.035,bh);
+    ctx.fillRect(bx+bw*0.965,by,bw*0.035,bh);
     ctx.fillStyle="#2b6bd9";
     ctx.fillRect(bx+bw*v-4,by-5,8,bh+10);
     ctx.strokeStyle="#fff";ctx.lineWidth=2;
     ctx.strokeRect(bx+bw*v-4,by-5,8,bh+10);
+    ctx.font="bold "+(W*0.028)+"px "+FONT;
+    ctx.fillStyle="#d9e5dc";ctx.textAlign="center";
+    ctx.fillText("黄色で止めると攻めのコース！赤だけフォルト",W/2,H*0.958);
   }
   if(state==="cpuServe"){
-    outlineText("ライバルのサーブ…",W/2,H*0.60,W*0.05,"#4a4a4a","#fff");
+    outlineText("ライバルのサーブ…",W/2,H*0.88,W*0.05,"#4a4a4a","#fff");
   }
 
   // banner
