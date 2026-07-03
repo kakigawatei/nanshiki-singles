@@ -168,7 +168,7 @@ function mkOutgoing(fromX,fromZ,toX,T,arc,opts){ // 自分→CPU
   return b;
 }
 function launchServe(who,powV,courseV){
-  const T=lerp(0.95,0.45,powV);
+  const T=who===0?lerp(0.85,0.38,powV):lerp(0.95,0.45,powV);
   const arc=lerp(0.26,0.10,powV);
   if(who===0){ // 自分→CPU
     ball=mkOutgoing(0,0.02,courseV*0.8,T,arc,{pow:powV,serve:true});
@@ -221,13 +221,18 @@ function cpuTryReturn(){
   // CPUの打点（seg[1]の終点）で拾えるか判定
   const cx=ball.seg[1].tx;
   const gap=Math.abs(cx-cpuX);
-  const speedPenalty=(0.62-ball.seg[0].T)*0.9; // 速いほど拾いにくい
-  const volleyBonus=ball.volley?0.12:0;
-  const dropBonus=ball.drop?0.14:0; // ネット際に落とすとCPUは前に走れず拾いにくい
-  let missP=clamp(gap*1.5+speedPenalty+volleyBonus+dropBonus-0.25,0.03,0.95);
-  if(ball.serve&&ball.pow>0.86&&gap>0.3)missP=Math.max(missP,0.75); // 強サーブエース
+  const noTouch=gap>0.32; // 追いつけない＝ノータッチ
+  const speedPenalty=(0.60-ball.seg[0].T)*1.2; // 速いほど拾いにくい
+  const volleyBonus=ball.volley?0.15:0;
+  const dropBonus=ball.drop?0.16:0; // ネット際に落とすとCPUは前に走れず拾いにくい
+  let missP=clamp(gap*2.2+speedPenalty+volleyBonus+dropBonus-0.18,0.03,0.97);
+  if(noTouch)missP=0.97;
+  if(ball.serve&&ball.pow>0.86&&gap>0.28)missP=Math.max(missP,0.85); // 強サーブエース
   if(Math.random()<missP){
-    const label=ball.serve?"サービスエース！！":"ウィナー！！";
+    let label="ウィナー！！";
+    if(ball.serve)label=noTouch?"ノータッチエース！！":"サービスエース！！";
+    else if(noTouch)label="ノータッチエース！！";
+    else if(ball.volley)label="ボレーが決まった！";
     addBurst(sx(cx,OPPZ),gy(OPPZ)-30,26);
     pointEnd(0,label,rallyN>3?"ナイスラリー！":"",null);
     return;
@@ -270,7 +275,7 @@ function attemptHit(norm){
   const volley=beforeBounce;
   // スワイプの強さ→深さと速さ：強＝ベースライン際へ速く、弱＝ネット際に落とす
   const bz=lerp(0.55,0.88,norm);
-  const T=(volley?0.9:1)*lerp(0.78,0.5,norm);
+  const T=(volley?0.80:1)*lerp(0.72,0.40,norm); // 球速アップ（ボレー/スマッシュはさらに速い）
   const arc=lerp(0.30,0.16,norm);
   rallyN++;
   playHit(1);
@@ -284,8 +289,8 @@ function update(dt){
   swing=Math.max(0,swing-dt);
   swingCd=Math.max(0,swingCd-dt);
   cpuHitT=Math.max(0,cpuHitT-dt);
-  // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく
-  if(state==="rally"||state==="ptEnd"||state==="cpuServe"){
+  // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく（スイング中は足を止める）
+  if((state==="rally"||state==="ptEnd"||state==="cpuServe")&&swing<=0.12){
     const spdX=0.95*dt,spdZ=0.42*dt;
     plX+=clamp(plTarget.x-plX,-spdX,spdX);
     plZ+=clamp(plTarget.z-plZ,-spdZ,spdZ);
@@ -310,8 +315,12 @@ function update(dt){
   ball.t+=dt/ball.seg[ball.si].T;
   ball.rot+=dt*(ball.dir===1?9:-9);
   if(ball.dir===-1){
-    // CPUは着地点→打点へ走る
-    cpuX=lerp(cpuX,ball.seg[1].tx,Math.min(1,dt*3.2*(0.5+CPU.reach)));
+    // CPUはボールがネットを越えたあたりで反応し、足の速さの上限つきで走る
+    const reacted=ball.si===1||ball.t>0.45;
+    if(reacted){
+      const spd=0.60*dt;
+      cpuX+=clamp(ball.seg[1].tx-cpuX,-spd,spd);
+    }
   }
   if(ball.t>=1){
     if(ball.si===0){
@@ -373,13 +382,18 @@ cv.addEventListener("pointermove",e=>{
   if(!touch.active)return;
   e.preventDefault();
   const px=e.clientX,py=e.clientY,now=performance.now();
+  touch.hist.push({x:px,y:py,t:now});
+  while(touch.hist.length&&now-touch.hist[0].t>180)touch.hist.shift();
+  // すばやい上方向の動き＝スイング動作中とみなし、移動指示には使わない
+  let maxY=-1e9;
+  for(const h of touch.hist)if(h.y>maxY)maxY=h.y;
+  const dyRecent=maxY-py;
+  const flicking=dyRecent>H*0.02;
   // 1) 指で目的地を指示（前後・斜めもOK。選手は足の速さでゆっくり追いつく）
-  if(state==="rally"||state==="ptEnd"||state==="cpuServe"){
+  if(!flicking&&(state==="rally"||state==="ptEnd"||state==="cpuServe")){
     plTarget=screenToCourt(px,py);
   }
   // 2) 上フリック検出：すばやい上はらい（180ms内にH*0.07以上）でスイング
-  touch.hist.push({x:px,y:py,t:now});
-  while(touch.hist.length&&now-touch.hist[0].t>180)touch.hist.shift();
   if(state==="rally"&&swingCd<=0){
     let maxY=-1e9;
     for(const h of touch.hist)if(h.y>maxY)maxY=h.y;
