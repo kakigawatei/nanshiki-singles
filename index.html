@@ -80,10 +80,10 @@ let srvNum=1;              // 1st/2nd
 let pow=0,course=0;        // サーブメーター
 let meterT=0;
 let ball=null;             // {dir:1=自分へ -1=相手へ,t,T,fromX,toX,arc,ch,rot}
-let cpuX=0,plSide="R",cpuSide="R";
+let cpuX=0,cpuZ=OPPZ,cpuHomeZ=OPPZ,plSide="R",cpuSide="R";
 let plX=0,plZ=0.03; // 操作選手の位置（ワールド座標）
 let plTarget={x:0,z:0.03}; // 指で指示した目的地（選手は足の速さでゆっくり追いつく）
-let touch={active:false,hist:[]}; // スワイプ検出用
+let touch={active:false,hist:[],lock:false}; // スワイプ検出用（lock=スイング後は指を離すまで移動禁止）
 // 画面座標→コート座標（前後移動用）
 function screenToCourt(px,py){
   const u=clamp((H*0.82-py)/(H*0.82-H*0.38),0,0.98);
@@ -121,6 +121,7 @@ function startMatch(n){
 function nextPoint(delay){
   ball=null;rallyN=0;srvNum=1;
   plTarget={x:plX*0.5,z:0.03}; // ポイント間はベースラインへ戻る
+  cpuZ=OPPZ;cpuHomeZ=OPPZ;cpuX=cpuX*0.5; // CPUもベースラインへ
   charIdx=(charIdx+1)%HATS.length;
   setTimeout(()=>{
     if(state==="matchEnd"||state==="title")return;
@@ -220,8 +221,11 @@ let bounceFx=[];
 function cpuTryReturn(){
   // CPUの打点（seg[1]の終点）で拾えるか判定
   const cx=ball.seg[1].tx;
-  const gap=Math.abs(cx-cpuX);
-  const noTouch=gap>0.32; // 追いつけない＝ノータッチ
+  const bz=ball.seg[0].tz; // バウンド位置（深さ）
+  const gapX=Math.abs(cx-cpuX);
+  const gapZ=Math.abs(bz-cpuZ); // ネットに詰めてる時の深い球／下がってる時のドロップが刺さる
+  const gap=Math.hypot(gapX,gapZ*0.85);
+  const noTouch=gap>0.34; // 追いつけない＝ノータッチ
   const speedPenalty=(0.60-ball.seg[0].T)*1.2; // 速いほど拾いにくい
   const volleyBonus=ball.volley?0.15:0;
   const dropBonus=ball.drop?0.16:0; // ネット際に落とすとCPUは前に走れず拾いにくい
@@ -243,6 +247,9 @@ function cpuTryReturn(){
   }
   // 返球：プレイヤーの逆を突く
   cpuX=cx;
+  cpuZ=clamp(bz,0.58,OPPZ);
+  // 打ったあとの陣形：たまにネットへ詰めてくる（前後の駆け引き）
+  cpuHomeZ=Math.random()<0.30?rand(0.60,0.70):OPPZ;
   playHit(0.45);cpuHitT=0.3;
   rallyN++;
   const aim=clamp(rand(-CPU.aim,CPU.aim)+(Math.random()<0.3?(cx>0?-0.3:0.3):0),-0.8,0.8);
@@ -289,8 +296,8 @@ function update(dt){
   swing=Math.max(0,swing-dt);
   swingCd=Math.max(0,swingCd-dt);
   cpuHitT=Math.max(0,cpuHitT-dt);
-  // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく（スイング中は足を止める）
-  if((state==="rally"||state==="ptEnd"||state==="cpuServe")&&swing<=0.12){
+  // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく（スイング中は完全に足を止める）
+  if((state==="rally"||state==="ptEnd"||state==="cpuServe")&&swing<=0){
     const spdX=0.95*dt,spdZ=0.42*dt;
     plX+=clamp(plTarget.x-plX,-spdX,spdX);
     plZ+=clamp(plTarget.z-plZ,-spdZ,spdZ);
@@ -306,6 +313,7 @@ function update(dt){
       pointEnd(0,"ダブルフォルト！","相手のサーブミス",null);
     }else{
       launchServe(1,rand(0.45,0.85),rand(-0.75,0.75));
+      cpuHomeZ=Math.random()<0.22?rand(0.60,0.70):OPPZ; // たまにサーブ＆ボレー
     }
     return;
   }
@@ -314,7 +322,11 @@ function update(dt){
   if(!ball)return;
   ball.t+=dt/ball.seg[ball.si].T;
   ball.rot+=dt*(ball.dir===1?9:-9);
-  if(ball.dir===-1){
+  // CPUの前後移動（ネット詰め⇄ベースライン。空きスペースが生まれる）
+  if(state==="rally"){
+    cpuZ+=clamp(cpuHomeZ-cpuZ,-0.32*dt,0.32*dt);
+  }
+  if(ball&&ball.dir===-1&&state==="rally"){
     // CPUはボールがネットを越えたあたりで反応し、足の速さの上限つきで走る
     const reacted=ball.si===1||ball.t>0.45;
     if(reacted){
@@ -390,7 +402,8 @@ cv.addEventListener("pointermove",e=>{
   const dyRecent=maxY-py;
   const flicking=dyRecent>H*0.02;
   // 1) 指で目的地を指示（前後・斜めもOK。選手は足の速さでゆっくり追いつく）
-  if(!flicking&&(state==="rally"||state==="ptEnd"||state==="cpuServe")){
+  // スイング後は指を離すまで移動指示を受け付けない（振った勢いで前に出ないように）
+  if(!flicking&&!touch.lock&&(state==="rally"||state==="ptEnd"||state==="cpuServe")){
     plTarget=screenToCourt(px,py);
   }
   // 2) 上フリック検出：すばやい上はらい（180ms内にH*0.07以上）でスイング
@@ -402,12 +415,13 @@ cv.addEventListener("pointermove",e=>{
       const norm=clamp(dy/(H*0.20),0.35,1);
       touch.hist=[{x:px,y:py,t:now}];
       plTarget={x:plX,z:plZ}; // フリックで選手が吹っ飛ばないように
+      touch.lock=true;        // 指を離すまで移動再開しない
       attemptHit(norm);
     }
   }
 },{passive:false});
-cv.addEventListener("pointerup",()=>{touch.active=false;touch.hist=[];});
-cv.addEventListener("pointercancel",()=>{touch.active=false;touch.hist=[];});
+cv.addEventListener("pointerup",()=>{touch.active=false;touch.hist=[];touch.lock=false;});
+cv.addEventListener("pointercancel",()=>{touch.active=false;touch.hist=[];touch.lock=false;});
 // メーター値：0..1を往復
 function meterVal(){
   const speed=srvNum===1?2.0:1.5; // 2ndは遅くて簡単
@@ -476,10 +490,10 @@ function render(){
   {
     let img=cpuHitT>0?(cpuSide==="L"?IMG.opp_swing_left:IMG.opp_swing_right):IMG.opp_ready;
     if(!ok(img))img=IMG.opp_ready;
-    const oxp=sx(cpuX,OPPZ),og=gy(OPPZ);
+    const oxp=sx(cpuX,cpuZ),og=gy(cpuZ);
     if(ok(img)){
       const poseK=img===IMG.opp_swing_right?0.94:1;
-      const oh=0.55*W*sc(OPPZ)*poseK;
+      const oh=0.55*W*sc(cpuZ)*poseK;
       const ow=oh*img.naturalWidth/img.naturalHeight;
       const bob=cpuHitT>0?0:Math.sin(performance.now()/280)*H*0.003;
       ctx.fillStyle="rgba(0,0,0,0.18)";
