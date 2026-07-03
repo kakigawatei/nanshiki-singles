@@ -225,13 +225,13 @@ function cpuTryReturn(){
   const cx=ball.seg[1].tx;
   const bz=ball.seg[0].tz; // バウンド位置（深さ）
   const gapX=Math.abs(cx-cpuX);
-  // 深さは0.28まではフットワークでカバーできる（極端な位置取りの逆だけが刺さる）
-  const gapZeff=Math.max(0,Math.abs(bz-cpuZ)-0.28);
+  // 深さは0.18まではフットワークでカバーできる（位置取りの逆を突くと刺さる）
+  const gapZeff=Math.max(0,Math.abs(bz-cpuZ)-0.18);
   const gap=Math.hypot(gapX,gapZeff*1.2);
   const noTouch=gap>0.34; // 追いつけない＝ノータッチ
   const speedPenalty=(0.55-ball.seg[0].T)*0.8; // 速いほど拾いにくい（普通の球はマイナス補正）
   const volleyBonus=ball.volley?0.10:0;
-  const dropBonus=ball.drop?0.10:0;
+  const dropBonus=ball.drop?0.14:0;
   let missP=clamp(gapX*1.8+gapZeff*1.5+speedPenalty+volleyBonus+dropBonus-0.22,0.02,0.97);
   if(noTouch)missP=0.97;
   if(ball.serve&&ball.pow>0.86&&gap>0.28)missP=Math.max(missP,0.85); // 強サーブエース
@@ -335,9 +335,9 @@ function update(dt){
     if(reacted){
       const spd=0.72*dt;
       cpuX+=clamp(ball.seg[1].tx-cpuX,-spd,spd);
-      // 深さもボールに寄せる（ただし全力では戻れない）
+      // 深さもボールに寄せる（ただし前後の切り返しは遅い＝位置取りの逆が刺さる）
       const wantZ=clamp(ball.seg[0].tz+0.12,0.58,OPPZ);
-      cpuZ+=clamp(wantZ-cpuZ,-0.38*dt,0.38*dt);
+      cpuZ+=clamp(wantZ-cpuZ,-0.22*dt,0.22*dt);
     }
   }
   if(ball.t>=1){
