@@ -24,13 +24,13 @@ const lerp=(a,b,t)=>a+(b-a)*t;
 const rand=(a,b)=>a+Math.random()*(b-a);
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
-/* ---------- perspective (ポンポンと同じ) ---------- */
-const K=1.7,S1=1/(1+K);
+/* ---------- perspective（コート一面がしっかり映る引きのカメラ） ---------- */
+const K=1.45,S1=1/(1+K);
 const sc=z=>1/(1+K*z);
-const gy=z=>{const u=(1-sc(z))/(1-S1);return H*0.93-(H*0.93-H*0.56)*u;};
-const sx=(x,z)=>W/2+x*0.62*W*sc(z);
+const gy=z=>{const u=(1-sc(z))/(1-S1);return H*0.93-(H*0.93-H*0.50)*u;};
+const sx=(x,z)=>W/2+x*0.52*W*sc(z);
 const sy=(z,y)=>gy(z)-y*0.85*H*sc(z);
-const NETZ=0.38,OPPZ=0.78;
+const NETZ=0.5,OPPZ=0.95; // ネットはコート中央、相手はベースライン
 
 /* ---------- audio ---------- */
 let AC=null;
@@ -116,14 +116,39 @@ function nextPoint(delay){
   },delay||600);
   state="ptEnd";
 }
+/* ワンバウンド軌道：seg[0]=打点→バウンド地点（着地）、seg[1]=バウンド→次の打点 */
+function mkIncoming(fromX,toX,T,arc,opts){ // CPU→自分
+  // サーブは自分側サービスボックス（ネット〜サービスライン）、ラリーは深め
+  const bz=(opts&&opts.serve)?rand(0.30,0.45):rand(0.12,0.24);
+  const drift=(toX-fromX)*0.15;
+  return Object.assign({
+    dir:1,si:0,t:0,ch:charIdx,rot:0,
+    seg:[
+      {fx:fromX,tx:toX,fz:OPPZ,tz:bz,y0:0.30,y1:0,arc,T},
+      {fx:toX,tx:clamp(toX+drift,-0.95,0.95),fz:bz,tz:-0.06,y0:0,y1:0,arc:0.20,T:T*0.85}
+    ]
+  },opts||{});
+}
+function mkOutgoing(fromX,fromZ,toX,T,arc,opts){ // 自分→CPU
+  // サーブは相手サービスボックス、ラリーは深くベースライン際へ
+  const bz=(opts&&opts.serve)?rand(0.56,0.72):rand(0.72,0.88);
+  const drift=(toX-fromX)*0.12;
+  return Object.assign({
+    dir:-1,si:0,t:0,ch:ball?ball.ch:charIdx,rot:0,
+    seg:[
+      {fx:fromX,tx:toX,fz:fromZ,tz:bz,y0:0.30,y1:0,arc,T},
+      {fx:toX,tx:clamp(toX+drift,-0.9,0.9),fz:bz,tz:OPPZ,y0:0,y1:0.28,arc:0.10,T:0.40}
+    ]
+  },opts||{});
+}
 function launchServe(who,powV,courseV){
-  const T=lerp(0.95,0.42,powV);
-  const arc=lerp(0.30,0.14,powV);
+  const T=lerp(0.95,0.45,powV);
+  const arc=lerp(0.26,0.10,powV);
   if(who===0){ // 自分→CPU
-    ball={dir:-1,t:0,T,fromX:0,toX:courseV*0.8,arc,ch:charIdx,rot:0,pow:powV,serve:true};
+    ball=mkOutgoing(0,0.02,courseV*0.8,T,arc,{pow:powV,serve:true});
     playHit(1);swing=0.25;plSide=courseV<0?"L":"R";
   }else{ // CPU→自分
-    ball={dir:1,t:0,T,fromX:cpuX,toX:courseV*0.75,arc,ch:charIdx,rot:0,pow:powV,serve:true};
+    ball=mkIncoming(cpuX,courseV*0.75,T,arc,{pow:powV,serve:true});
     playHit(0.45);cpuHitT=0.3;cpuSide=courseV<0?"L":"R";
   }
   state="rally";
@@ -159,60 +184,65 @@ function pointEnd(winner,main,sub,col){
 
 /* ---------- rally logic ---------- */
 function ballPos(){
-  const t=ball.t;
-  const z=ball.dir===1?OPPZ*(1-t):OPPZ*t;
-  const x=lerp(ball.fromX,ball.toX,t);
-  const y=lerp(0.28,0.30,t)+Math.sin(Math.PI*t)*(ball.arc||0.20);
-  return{x,z,y,bx:sx(x,z),by:sy(z,y),br:Math.max(8,0.115*W*sc(z))};
+  const s=ball.seg[ball.si],t=ball.t;
+  const z=lerp(s.fz,s.tz,t);
+  const x=lerp(s.fx,s.tx,t);
+  const y=lerp(s.y0,s.y1,t)+Math.sin(Math.PI*t)*s.arc;
+  return{x,z,y,bx:sx(x,z),by:sy(z,y),br:Math.max(7,0.085*W*sc(Math.max(0,z)))};
 }
+let bounceFx=[];
 function cpuTryReturn(){
-  // CPU側にボール到達：拾えるか判定
-  const gap=Math.abs(ball.toX-cpuX);
-  const speedPenalty=(0.62-ball.T)*0.9;       // 速いほど拾いにくい
+  // CPUの打点（seg[1]の終点）で拾えるか判定
+  const cx=ball.seg[1].tx;
+  const gap=Math.abs(cx-cpuX);
+  const speedPenalty=(0.62-ball.seg[0].T)*0.9; // 速いほど拾いにくい
   const volleyBonus=ball.volley?0.12:0;
   let missP=clamp(gap*1.5+speedPenalty+volleyBonus-0.25,0.03,0.95);
   if(ball.serve&&ball.pow>0.86&&gap>0.3)missP=Math.max(missP,0.75); // 強サーブエース
   if(Math.random()<missP){
     const label=ball.serve?"サービスエース！！":"ウィナー！！";
-    addBurst(sx(ball.toX,OPPZ),gy(OPPZ)-30,26);
+    addBurst(sx(cx,OPPZ),gy(OPPZ)-30,26);
     pointEnd(0,label,rallyN>3?"ナイスラリー！":"",null);
     return;
   }
-  // CPU自滅
   if(Math.random()<CPU.err){
     pointEnd(0,"相手のミス！","ラッキー！",null);
     return;
   }
   // 返球：プレイヤーの逆を突く
-  cpuX=ball.toX;
+  cpuX=cx;
   playHit(0.45);cpuHitT=0.3;
   rallyN++;
-  const aim=rand(-CPU.aim,CPU.aim)+(Math.random()<0.3?(ball.toX>0?-0.3:0.3):0);
-  const T=Math.max(0.42,lerp(0.85,0.5,Math.min(1,rallyN/8)));
+  const aim=clamp(rand(-CPU.aim,CPU.aim)+(Math.random()<0.3?(cx>0?-0.3:0.3):0),-0.8,0.8);
+  const T=Math.max(0.45,lerp(0.85,0.52,Math.min(1,rallyN/8)));
   cpuSide=aim<cpuX?"L":"R";
-  ball={dir:1,t:0,T,fromX:cpuX,toX:clamp(aim,-0.8,0.8),arc:rand(0.14,0.30),ch:ball.ch,rot:0};
+  ball=mkIncoming(cpuX,aim,T,rand(0.12,0.26),{ch:ball.ch});
 }
 function playerHit(px,py){
   const p=ballPos();
-  if(p.z>NETZ+0.16)return false;
+  // 打てる条件：バウンド後（ストローク）or ネットを越えた直後のノーバウンド（ボレー）
+  const afterBounce=ball.si===1;
+  const beforeBounce=ball.si===0&&p.z<=NETZ+0.02;
+  if(!afterBounce&&!beforeBounce)return false;
   const dist=Math.hypot(px-p.bx,py-p.by);
   if(dist>Math.max(46,p.br*1.7)+22)return false;
-  // タイミング→コース（ポンポンと同じ引きつけ式）
-  const zMax=NETZ+0.16,zN=0.06;
+  // タイミング→コース（引きつけ式）：目の前まで待つとまっすぐ
+  const zMax=afterBounce?Math.max(0.12,ball.seg[1].fz):NETZ+0.02;
+  const zN=0.06;
   let tau;
   if(p.z>=zN)tau=0.5+0.5*Math.min(1,(p.z-zN)/(zMax-zN));
-  else tau=0.5*(p.z/zN);
+  else tau=0.5*(Math.max(0,p.z)/zN);
   const sideSign=p.x>=0?1:-1;
   let toX=sideSign*(1-2*tau)*(0.7+Math.abs(p.x)*0.3)+rand(-0.05,0.05);
   toX=clamp(toX,-0.92,0.92);
-  const volley=p.z>0.22;
+  const volley=beforeBounce;
   const T=volley?0.5:0.62;
   rallyN++;
   playHit(1);
   addBurst(p.bx,p.by,p.br);
   addPopup(p.bx,p.by,volley?"ボレー！":"ストローク！",volley?"#2b6bd9":"#ff5f7e");
   plSide=px<W/2?"L":"R";
-  ball={dir:-1,t:0,T,fromX:p.x,toX,arc:volley?0.16:0.22,ch:ball.ch,rot:0,volley};
+  ball=mkOutgoing(p.x,Math.max(0.02,p.z),toX,T,volley?0.14:0.20,{ch:ball.ch,volley});
   return true;
 }
 
@@ -235,15 +265,29 @@ function update(dt){
     }
     return;
   }
+  bounceFx.forEach(b=>b.age+=dt);bounceFx=bounceFx.filter(b=>b.age<0.4);
   if(state!=="rally")return;
   if(!ball)return;
-  ball.t+=dt/ball.T;
+  ball.t+=dt/ball.seg[ball.si].T;
   ball.rot+=dt*(ball.dir===1?9:-9);
   if(ball.dir===-1){
-    cpuX=lerp(cpuX,ball.toX,Math.min(1,dt*3.2*(0.5+CPU.reach)));
-    if(ball.t>=1)cpuTryReturn();
-  }else if(ball.t>=1){
-    pointEnd(1,ball.serve?"サービスエースを取られた…":"取れなかった…","",null);
+    // CPUは着地点→打点へ走る
+    cpuX=lerp(cpuX,ball.seg[1].tx,Math.min(1,dt*3.2*(0.5+CPU.reach)));
+  }
+  if(ball.t>=1){
+    if(ball.si===0){
+      // ワンバウンド
+      ball.si=1;ball.t=0;
+      const s=ball.seg[1];
+      bounceFx.push({x:sx(s.fx,s.fz),y:gy(s.fz),age:0});
+      beep(320,0.05,"sine",0.07);
+    }else{
+      if(ball.dir===1){
+        pointEnd(1,ball.serve?"サービスエースを取られた…":"取れなかった…","ツーバウンド",null);
+      }else{
+        cpuTryReturn();
+      }
+    }
   }
 }
 
@@ -355,9 +399,9 @@ function render(){
   ctx.strokeStyle="#fff";
   const line=(x1,z1,x2,z2,w2)=>{ctx.lineWidth=w2||3;ctx.beginPath();ctx.moveTo(sx(x1,z1),gy(z1));ctx.lineTo(sx(x2,z2),gy(z2));ctx.stroke();};
   line(-0.85,0.02,-0.85,0.97);line(0.85,0.02,0.85,0.97);
-  line(-0.85,0.97,0.85,0.97,3);
-  line(0,0.02,0,0.97,2);
-  line(-0.85,0.58,0.85,0.58,2);
+  line(-0.85,0.02,0.85,0.02,3);line(-0.85,0.97,0.85,0.97,3);
+  line(-0.85,0.26,0.85,0.26,2);line(-0.85,0.74,0.85,0.74,2);
+  line(0,0.26,0,0.74,2);
 
   // CPU（ネットより奥）
   {
@@ -366,7 +410,7 @@ function render(){
     const oxp=sx(cpuX,OPPZ),og=gy(OPPZ);
     if(ok(img)){
       const poseK=img===IMG.opp_swing_right?0.94:1;
-      const oh=0.62*W*sc(OPPZ)*poseK;
+      const oh=0.55*W*sc(OPPZ)*poseK;
       const ow=oh*img.naturalWidth/img.naturalHeight;
       const bob=cpuHitT>0?0:Math.sin(performance.now()/280)*H*0.003;
       ctx.fillStyle="rgba(0,0,0,0.18)";
@@ -374,6 +418,22 @@ function render(){
       ctx.drawImage(img,oxp-ow/2,og-oh+bob,ow,oh);
     }
   }
+
+  // 着地予測マーカー（自分側に飛んでくるボールのバウンド地点）
+  if(ball&&state==="rally"&&ball.dir===1&&ball.si===0){
+    const s=ball.seg[0];
+    const mx=sx(s.tx,s.tz),my=gy(s.tz);
+    const pulse=1+0.15*Math.sin(performance.now()/120);
+    ctx.strokeStyle="rgba(255,220,80,0.8)";ctx.lineWidth=3;
+    ctx.beginPath();ctx.ellipse(mx,my,W*0.035*pulse,W*0.013*pulse,0,0,Math.PI*2);ctx.stroke();
+  }
+  // バウンドの波紋
+  bounceFx.forEach(b=>{
+    const k=b.age/0.4;
+    ctx.strokeStyle=`rgba(255,255,255,${(1-k).toFixed(2)})`;
+    ctx.lineWidth=2;
+    ctx.beginPath();ctx.ellipse(b.x,b.y,W*0.04*k+4,W*0.015*k+2,0,0,Math.PI*2);ctx.stroke();
+  });
 
   const p=ball?ballPos():null;
   const drawBall=()=>{
@@ -408,7 +468,7 @@ function render(){
     let img=swing>0?(plSide==="L"?IMG.player_swing_left:IMG.player_swing_right):IMG.player_idle;
     if(!ok(img))img=IMG.player_idle;
     if(ok(img)){
-      const ph=0.46*W*(swing>0?1.05:1);
+      const ph=0.30*W*(swing>0?1.05:1);
       const pw=ph*img.naturalWidth/img.naturalHeight;
       const bob=swing>0?0:Math.sin(performance.now()/300)*H*0.004;
       ctx.drawImage(img,W/2-pw/2,H*1.02-ph+bob,pw,ph);
