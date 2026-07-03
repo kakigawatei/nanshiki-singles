@@ -125,17 +125,22 @@ function nextPoint(delay){
   charIdx=(charIdx+1)%HATS.length;
   setTimeout(()=>{
     if(state==="matchEnd"||state==="title")return;
+    const even=ptsInGame%2===0; // 偶数ポイント=右から左のコートへ、奇数=左から右へ
     if(serverNow()===0){
       state="serve";meterT=0;
-      plZ=-0.04;plX=0.22;plTarget={x:0.22,z:0.03}; // ベースラインの外で構える
-    }else{state="cpuServe";meterT=0;}
+      plZ=-0.04;plX=even?0.25:-0.25;plTarget={x:plX,z:0.03}; // 正しいサイドのベースライン外で構える
+    }else{
+      state="cpuServe";meterT=0;
+      cpuX=even?-0.25:0.25;cpuZ=OPPZ; // CPUも自分の右/左サイドから
+      plX=even?0.30:-0.30;plZ=0.03;plTarget={x:plX,z:0.03}; // レシーブ側の構え
+    }
   },delay||600);
   state="ptEnd";
 }
 /* ワンバウンド軌道：seg[0]=打点→バウンド地点（着地）、seg[1]=バウンド→次の打点 */
 function mkIncoming(fromX,toX,T,arc,opts){ // CPU→自分
-  // サーブは自分側サービスボックス（ネット〜サービスライン）、ラリーは深め
-  const bz=(opts&&opts.serve)?rand(0.30,0.45):rand(0.12,0.24);
+  // サーブは自分側サービスボックス、ラリーは深め、bz指定（ロブ等）があれば優先
+  const bz=(opts&&opts.bz!==undefined)?opts.bz:((opts&&opts.serve)?rand(0.30,0.45):rand(0.12,0.24));
   const drift=(toX-fromX)*0.15;
   const b=Object.assign({
     dir:1,si:0,t:0,ch:charIdx,rot:0,
@@ -230,7 +235,7 @@ function cpuTryReturn(){
   const gap=Math.hypot(gapX,gapZeff*1.2);
   const noTouch=gap>0.34; // 追いつけない＝ノータッチ
   const speedPenalty=(0.55-ball.seg[0].T)*0.8; // 速いほど拾いにくい（普通の球はマイナス補正）
-  const volleyBonus=ball.volley?0.10:0;
+  const volleyBonus=ball.volley?0.22:0; // ボレーは鋭くてノータッチになりやすい
   const dropBonus=ball.drop?0.14:0;
   let missP=clamp(gapX*1.8+gapZeff*1.5+speedPenalty+volleyBonus+dropBonus-0.22,0.02,0.97);
   if(noTouch)missP=0.97;
@@ -255,6 +260,14 @@ function cpuTryReturn(){
   cpuHomeZ=Math.random()<0.30?rand(0.60,0.70):OPPZ;
   playHit(0.45);cpuHitT=0.3;
   rallyN++;
+  // こっちがネットに詰めてたらロブで頭上を抜いてくる！
+  if(plZ>0.26&&Math.random()<0.5){
+    const aim=clamp(-plX*0.4+rand(-0.35,0.35),-0.7,0.7);
+    cpuSide=aim<cpuX?"L":"R";
+    ball=mkIncoming(cpuX,aim,0.95,0.50,{ch:ball.ch,bz:rand(0.04,0.11),lob:true});
+    addPopup(sx(cpuX,cpuZ),gy(cpuZ)-40,"ロブ！","#7a5cd6");
+    return;
+  }
   const aim=clamp(rand(-CPU.aim,CPU.aim)+(Math.random()<0.3?(cx>0?-0.3:0.3):0),-0.8,0.8);
   const T=Math.max(0.45,lerp(0.85,0.52,Math.min(1,rallyN/8)));
   cpuSide=aim<cpuX?"L":"R";
@@ -315,7 +328,9 @@ function update(dt){
     if(Math.random()<0.06){
       pointEnd(0,"ダブルフォルト！","相手のサーブミス",null);
     }else{
-      launchServe(1,rand(0.45,0.85),rand(-0.75,0.75));
+      const even=ptsInGame%2===0;
+      const c=even?rand(0.10,0.72):rand(-0.72,-0.10); // CPUもクロスに入れる
+      launchServe(1,rand(0.45,0.85),c);
       cpuHomeZ=Math.random()<0.22?rand(0.60,0.70):OPPZ; // たまにサーブ＆ボレー
     }
     return;
@@ -375,16 +390,18 @@ cv.addEventListener("pointerdown",e=>{
   }
   if(state==="matchEnd"){state="title";return;}
   if(state==="serve"){
-    // ゲージ1本：角度（コース）だけ調整。端の赤ゾーンだけフォルト
+    // ゲージ1本：角度（コース）だけ調整。正しいサイド（クロス）に入れないとフォルト
     course=meterVal()*2-1; // -1..1
-    if(Math.abs(course)>0.93){
+    const even=ptsInGame%2===0;
+    const valid=even?(course<=-0.05&&course>=-0.90):(course>=0.05&&course<=0.90);
+    if(!valid){
       if(srvNum===1){
         srvNum=2;
         banner={main:"フォルト！",sub:"セカンドサーブ",col:"#d94848",until:performance.now()+900};
         beep(240,0.15,"sawtooth",0.1);
         state="serve";meterT=0;
       }else{
-        pointEnd(1,"ダブルフォルト…","はしっこの赤だけ気をつけて！","#d94848");
+        pointEnd(1,"ダブルフォルト…","入るゾーン（緑・黄）で止めよう！","#d94848");
       }
       return;
     }
@@ -616,25 +633,26 @@ function render(){
   // serve meter（1本：角度だけ・画面上部に表示）
   if(state==="serve"){
     const v=meterVal();
+    const even=ptsInGame%2===0;
     ctx.fillStyle="rgba(20,40,30,0.8)";
     roundRect(W*0.08,H*0.125,W*0.84,H*0.115,16);ctx.fill();
-    outlineText("サーブのかくど！"+(srvNum===2?"（2ndサーブ）":""),W/2,H*0.153,W*0.045,"#fff","#2e7d46");
+    outlineText((even?"みぎ側から→ひだりのコートへ！":"ひだり側から→みぎのコートへ！")+(srvNum===2?"（2nd）":""),W/2,H*0.153,W*0.042,"#fff","#2e7d46");
     const bx=W*0.13,bw=W*0.74,by=H*0.185,bh=H*0.032;
-    // 中央=安全（緑）、左右=攻めコース（黄）、最端のみフォルト（赤・せまい）
-    ctx.fillStyle="#9fe0b0";roundRect(bx,by,bw,bh,8);ctx.fill();
+    // 入るサイドだけ緑（安全）＋黄（ライン際の攻め）、反対側と外は赤＝フォルト
+    ctx.fillStyle="#d94848";roundRect(bx,by,bw,bh,8);ctx.fill();
+    ctx.fillStyle="#9fe0b0";
+    if(even)ctx.fillRect(bx+bw*0.16,by,bw*(0.475-0.16),bh);
+    else ctx.fillRect(bx+bw*0.525,by,bw*(0.84-0.525),bh);
     ctx.fillStyle="#ffd76e";
-    ctx.fillRect(bx+bw*0.035,by,bw*0.165,bh);
-    ctx.fillRect(bx+bw*0.80,by,bw*0.165,bh);
-    ctx.fillStyle="#d94848";
-    ctx.fillRect(bx,by,bw*0.035,bh);
-    ctx.fillRect(bx+bw*0.965,by,bw*0.035,bh);
+    if(even)ctx.fillRect(bx+bw*0.05,by,bw*0.11,bh);
+    else ctx.fillRect(bx+bw*0.84,by,bw*0.11,bh);
     ctx.fillStyle="#2b6bd9";
     ctx.fillRect(bx+bw*v-4,by-5,8,bh+10);
     ctx.strokeStyle="#fff";ctx.lineWidth=2;
     ctx.strokeRect(bx+bw*v-4,by-5,8,bh+10);
     ctx.font="bold "+(W*0.028)+"px "+FONT;
     ctx.fillStyle="#d9e5dc";ctx.textAlign="center";
-    ctx.fillText("黄色で止めると攻めのコース！赤だけフォルト",W/2,H*0.232);
+    ctx.fillText("緑＝安全に入る　黄＝ライン際の攻めサーブ　赤＝フォルト",W/2,H*0.232);
   }
   if(state==="cpuServe"){
     outlineText("ライバルのサーブ…",W/2,H*0.17,W*0.05,"#4a4a4a","#fff");
