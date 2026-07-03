@@ -81,8 +81,18 @@ let pow=0,course=0;        // サーブメーター
 let meterT=0;
 let ball=null;             // {dir:1=自分へ -1=相手へ,t,T,fromX,toX,arc,ch,rot}
 let cpuX=0,plSide="R",cpuSide="R";
-let plX=0; // 操作選手の横位置（ワールド座標）
-let touch={active:false,hist:[],lastX:0}; // なぞり移動＆スワイプ検出用
+let plX=0,plZ=0.03; // 操作選手の位置（ワールド座標）
+let plTarget={x:0,z:0.03}; // 指で指示した目的地（選手は足の速さでゆっくり追いつく）
+let touch={active:false,hist:[]}; // スワイプ検出用
+// 画面座標→コート座標（前後移動用）
+function screenToCourt(px,py){
+  const u=clamp((H*0.82-py)/(H*0.82-H*0.38),0,0.98);
+  const scv=1-u*(1-S1);
+  let z=(1/scv-1)/K;
+  z=clamp(z,0.03,0.45); // ベースライン〜ネット手前まで
+  const x=clamp((px-W/2)/(0.52*W*sc(z)),-0.95,0.95);
+  return{x,z};
+}
 let swing=0,swingCd=0,cpuHitT=0;
 let popups=[],bursts=[],shake=0;
 let banner=null;           // {main,sub,col,until,next}
@@ -110,6 +120,7 @@ function startMatch(n){
 }
 function nextPoint(delay){
   ball=null;rallyN=0;srvNum=1;
+  plTarget={x:plX*0.5,z:0.03}; // ポイント間はベースラインへ戻る
   charIdx=(charIdx+1)%HATS.length;
   setTimeout(()=>{
     if(state==="matchEnd"||state==="title")return;
@@ -241,7 +252,7 @@ function attemptHit(norm){
   const p=ballPos();
   const afterBounce=ball.si===1;
   const beforeBounce=ball.si===0&&p.z<=NETZ+0.02;
-  const reachOk=Math.abs(p.x-plX)<=0.34; // 選手の届く範囲
+  const reachOk=Math.hypot(p.x-plX,(p.z-plZ)*1.2)<=0.38; // 選手の届く範囲（前後も考慮）
   if((!afterBounce&&!beforeBounce)||!reachOk){
     beep(250,0.09,"sine",0.07);
     addPopup(sx(plX,0.06),gy(0.10),"スカッ","#9aa7b5");
@@ -264,8 +275,6 @@ function attemptHit(norm){
   rallyN++;
   playHit(1);
   addBurst(p.bx,p.by,p.br);
-  const strokeLbl=volley?"ボレー！":(norm<0.5?"ドロップ！":(norm>0.85?"強打！！":"ストローク！"));
-  addPopup(p.bx,p.by,strokeLbl,volley?"#2b6bd9":(norm>0.85?"#ff6a00":"#ff5f7e"));
   plSide=p.x<plX?"L":"R";
   ball=mkOutgoing(p.x,Math.max(0.02,p.z),toX,T,arc,{ch:ball.ch,volley,bz,drop:bz<0.62});
 }
@@ -275,6 +284,12 @@ function update(dt){
   swing=Math.max(0,swing-dt);
   swingCd=Math.max(0,swingCd-dt);
   cpuHitT=Math.max(0,cpuHitT-dt);
+  // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく
+  if(state==="rally"||state==="ptEnd"||state==="cpuServe"){
+    const spdX=0.95*dt,spdZ=0.42*dt;
+    plX+=clamp(plTarget.x-plX,-spdX,spdX);
+    plZ+=clamp(plTarget.z-plZ,-spdZ,spdZ);
+  }
   shake=Math.max(0,shake-dt*30);
   meterT+=dt;
   popups.forEach(p=>p.age+=dt);popups=popups.filter(p=>p.age<0.9);
@@ -320,7 +335,8 @@ cv.addEventListener("pointerdown",e=>{
   e.preventDefault();
   if(AC&&AC.state==="suspended")AC.resume();
   const px=e.clientX,py=e.clientY;
-  touch.active=true;touch.lastX=px;touch.hist=[{x:px,y:py,t:performance.now()}];
+  touch.active=true;touch.hist=[{x:px,y:py,t:performance.now()}];
+  if(state==="rally"||state==="ptEnd"||state==="cpuServe")plTarget=screenToCourt(px,py);
   if(state==="title"){state="fmt";beep(660,0.08,"sine",0.1);return;}
   if(state==="fmt"){
     const opts=[1,3,5];
@@ -357,22 +373,21 @@ cv.addEventListener("pointermove",e=>{
   if(!touch.active)return;
   e.preventDefault();
   const px=e.clientX,py=e.clientY,now=performance.now();
-  // 1) なぞり移動：指の横移動に選手がついてくる
+  // 1) 指で目的地を指示（前後・斜めもOK。選手は足の速さでゆっくり追いつく）
   if(state==="rally"||state==="ptEnd"||state==="cpuServe"){
-    const dx=px-touch.lastX;
-    plX=clamp(plX+dx/(0.52*W*sc(0.03)),-0.95,0.95);
+    plTarget=screenToCourt(px,py);
   }
-  touch.lastX=px;
-  // 2) 上スワイプ検出：直近220ms内にH*0.055以上の上移動でスイング
+  // 2) 上フリック検出：すばやい上はらい（180ms内にH*0.07以上）でスイング
   touch.hist.push({x:px,y:py,t:now});
-  while(touch.hist.length&&now-touch.hist[0].t>220)touch.hist.shift();
+  while(touch.hist.length&&now-touch.hist[0].t>180)touch.hist.shift();
   if(state==="rally"&&swingCd<=0){
     let maxY=-1e9;
     for(const h of touch.hist)if(h.y>maxY)maxY=h.y;
     const dy=maxY-py;
-    if(dy>H*0.055){
+    if(dy>H*0.07){
       const norm=clamp(dy/(H*0.20),0.35,1);
       touch.hist=[{x:px,y:py,t:now}];
+      plTarget={x:plX,z:plZ}; // フリックで選手が吹っ飛ばないように
       attemptHit(norm);
     }
   }
@@ -508,11 +523,12 @@ function render(){
     let img=swing>0?(plSide==="L"?IMG.player_swing_left:IMG.player_swing_right):IMG.player_idle;
     if(!ok(img))img=IMG.player_idle;
     if(ok(img)){
-      const ph=0.34*W*(swing>0?1.05:1);
+      const depth=sc(plZ)/sc(0.03); // 前に出ると小さく見える
+      const ph=0.34*W*depth*(swing>0?1.05:1);
       const pw=ph*img.naturalWidth/img.naturalHeight;
       const bob=swing>0?0:Math.sin(performance.now()/300)*H*0.004;
-      const pfoot=gy(0.03); // 自分のベースライン上に全身が見える
-      const pcx=sx(plX,0.03); // なぞり移動に追従
+      const pfoot=gy(plZ);
+      const pcx=sx(plX,plZ);
       ctx.fillStyle="rgba(0,0,0,0.18)";
       ctx.beginPath();ctx.ellipse(pcx,pfoot,pw*0.42,ph*0.06,0,0,Math.PI*2);ctx.fill();
       ctx.drawImage(img,pcx-pw/2,pfoot-ph+bob,pw,ph);
