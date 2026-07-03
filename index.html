@@ -107,7 +107,7 @@ function serverNow(){
   if(isFinal())return (gameIdx+Math.floor(ptsInGame/2))%2;
   return gameIdx%2;
 }
-const CPU={reach:0.34,aim:0.55,err:0.06}; // 追いつく距離/狙いの広さ/自滅率
+const CPU={reach:0.34,aim:0.55,err:0.04}; // 追いつく距離/狙いの広さ/自滅率
 
 function addPopup(x,y,txt,col){popups.push({x,y,txt,col:col||"#ff5f7e",age:0});}
 function addBurst(x,y,r){bursts.push({x,y,r,age:0});}
@@ -233,13 +233,13 @@ function cpuTryReturn(){
   // 深さは0.18まではフットワークでカバーできる（位置取りの逆を突くと刺さる）
   const gapZeff=Math.max(0,Math.abs(bz-cpuZ)-0.18);
   const gap=Math.hypot(gapX,gapZeff*1.2);
-  const noTouch=gap>0.34; // 追いつけない＝ノータッチ
-  const speedPenalty=(0.55-ball.seg[0].T)*0.8; // 速いほど拾いにくい（普通の球はマイナス補正）
-  const volleyBonus=ball.volley?0.22:0; // ボレーは鋭くてノータッチになりやすい
-  const dropBonus=ball.drop?0.14:0;
-  let missP=clamp(gapX*1.8+gapZeff*1.5+speedPenalty+volleyBonus+dropBonus-0.22,0.02,0.97);
-  if(noTouch)missP=0.97;
-  if(ball.serve&&ball.pow>0.86&&gap>0.28)missP=Math.max(missP,0.85); // 強サーブエース
+  const noTouch=gap>0.42; // 本当に届かない時だけノータッチ
+  const speedPenalty=Math.max(0,(0.55-ball.seg[0].T))*0.6; // 速い球だけ拾いにくい
+  const volleyBonus=ball.volley?0.18:0; // ボレーは鋭い
+  const dropBonus=ball.drop?0.12:0;
+  let missP=clamp(gapX*1.5+gapZeff*1.3+speedPenalty+volleyBonus+dropBonus-0.30,0.02,0.95);
+  if(noTouch)missP=0.96;
+  if(ball.serve&&ball.pow>0.88&&gap>0.32)missP=Math.max(missP,0.8); // 強サーブエース
   if(Math.random()<missP){
     let label="ウィナー！！";
     if(ball.serve)label=noTouch?"ノータッチエース！！":"サービスエース！！";
@@ -346,13 +346,13 @@ function update(dt){
   }
   if(ball&&ball.dir===-1&&state==="rally"){
     // CPUはボールがネットを越えたあたりで反応し、足の速さの上限つきで軽快に走る
-    const reacted=ball.si===1||ball.t>0.35;
+    const reacted=ball.si===1||ball.t>0.25;
     if(reacted){
-      const spd=0.72*dt;
+      const spd=0.85*dt;
       cpuX+=clamp(ball.seg[1].tx-cpuX,-spd,spd);
-      // 深さもボールに寄せる（ただし前後の切り返しは遅い＝位置取りの逆が刺さる）
+      // 深さもボールに寄せる（ただし前後の切り返しは遅め＝位置取りの逆が刺さる）
       const wantZ=clamp(ball.seg[0].tz+0.12,0.58,OPPZ);
-      cpuZ+=clamp(wantZ-cpuZ,-0.22*dt,0.22*dt);
+      cpuZ+=clamp(wantZ-cpuZ,-0.30*dt,0.30*dt);
     }
   }
   if(ball.t>=1){
