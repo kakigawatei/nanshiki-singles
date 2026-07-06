@@ -65,6 +65,7 @@ function playHit(vol){
 /* ---------- sprites ---------- */
 const IMG={};
 ["opp_ready","opp_swing_left","opp_swing_right","player_idle","player_swing_left","player_swing_right",
+ "opp_celeb1","opp_celeb2","opp_dejected","opp_serve_toss","opp_serve_hit",
  "ball_cap","ball_hachimaki","ball_visor","ball_china","ball_arrow"].forEach(n=>{
   const im=new Image();im.src=n+".png";IMG[n]=im;
 });
@@ -94,6 +95,7 @@ function screenToCourt(px,py){
   return{x,z};
 }
 let swing=0,swingCd=0,cpuHitT=0;
+let cpuEmo=null,cpuEmoUntil=0,cpuServeHitT=0; // ライバルの喜び/悔しがり・サーブ打点モーション
 let popups=[],bursts=[],shake=0;
 let banner=null;           // {main,sub,col,until,next}
 let charIdx=0,rallyN=0;
@@ -183,7 +185,7 @@ function launchServe(who,powV,courseV){
     playHit(1);swing=0.25;plSide=courseV<0?"L":"R";
   }else{ // CPU→自分
     ball=mkIncoming(cpuX,courseV*0.75,T,arc,{pow:powV,serve:true});
-    playHit(0.45);cpuHitT=0.3;cpuSide=courseV<0?"L":"R";
+    playHit(0.45);cpuServeHitT=0.42;cpuSide=courseV<0?"L":"R";
   }
   state="rally";
 }
@@ -194,6 +196,8 @@ function pointEnd(winner,main,sub,col){
   let gameWon=-1;
   if((pts[0]>=target||pts[1]>=target)&&lead>=2)gameWon=pts[0]>pts[1]?0:1;
   banner={main,sub:sub||"",col:col||(winner===0?"#ff9a2e":"#5b7a99"),until:performance.now()+1300};
+  cpuEmo=winner===1?"celebrate":"dejected"; // ライバルが取れば喜ぶ、取られれば悔しがる
+  cpuEmoUntil=performance.now()+1350;
   beep(winner===0?990:220,0.15,winner===0?"sine":"sawtooth",0.13);
   if(winner===0)shake=0;else shake=6;
   state="ptEnd";
@@ -318,6 +322,7 @@ function update(dt){
   swing=Math.max(0,swing-dt);
   swingCd=Math.max(0,swingCd-dt);
   cpuHitT=Math.max(0,cpuHitT-dt);
+  cpuServeHitT=Math.max(0,cpuServeHitT-dt);
   // 選手は指の指示に向かって「足の速さ」でゆっくり追いつく（スイング中は完全に足を止める）
   if((state==="rally"||state==="ptEnd"||state==="cpuServe")&&swing<=0){
     // 指にほぼくっついてくる追従（わずかな遅れだけ残す）
@@ -522,14 +527,27 @@ function render(){
 
   // CPU（ネットより奥）
   {
-    let img=cpuHitT>0?(cpuSide==="L"?IMG.opp_swing_left:IMG.opp_swing_right):IMG.opp_ready;
+    const nowc=performance.now();
+    let img;
+    if(cpuEmo&&nowc<cpuEmoUntil){
+      // ポイント後の喜び（2枚でジャンプ）／悔しがり
+      img=cpuEmo==="celebrate"?(Math.floor(nowc/200)%2===0?IMG.opp_celeb2:IMG.opp_celeb1):IMG.opp_dejected;
+    }else if(state==="cpuServe"){
+      img=IMG.opp_serve_toss;         // サーブ構え（トス）
+    }else if(cpuServeHitT>0){
+      img=IMG.opp_serve_hit;          // サーブ打点
+    }else if(cpuHitT>0){
+      img=cpuSide==="L"?IMG.opp_swing_left:IMG.opp_swing_right;
+    }else img=IMG.opp_ready;
     if(!ok(img))img=IMG.opp_ready;
     const oxp=sx(cpuX,cpuZ),og=gy(cpuZ);
     if(ok(img)){
-      const poseK=img===IMG.opp_swing_right?0.94:1;
+      let poseK=1;
+      if(img===IMG.opp_swing_right)poseK=0.94;
+      else if(img===IMG.opp_serve_toss)poseK=1.15; // トスの球ぶん背が高いので体を大きめに補正
       const oh=0.55*W*sc(cpuZ)*poseK;
       const ow=oh*img.naturalWidth/img.naturalHeight;
-      const bob=cpuHitT>0?0:Math.sin(performance.now()/280)*H*0.003;
+      const bob=img===IMG.opp_ready?Math.sin(nowc/280)*H*0.003:0;
       ctx.fillStyle="rgba(0,0,0,0.18)";
       ctx.beginPath();ctx.ellipse(oxp,og,ow*0.42,oh*0.07,0,0,Math.PI*2);ctx.fill();
       ctx.drawImage(img,oxp-ow/2,og-oh+bob,ow,oh);
